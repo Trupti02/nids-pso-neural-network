@@ -1,16 +1,22 @@
-import json
+import json, time
 import numpy as np
 import joblib
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
-from sklearn.neural_network import MLPClassifier
+from sklearn.svm import SVC
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
 
 import config as cfg
 from data_loader import load_dataset, get_feature_lists, build_preprocessor
 from pso import PSO
+from svm_model import SVMClassifier
+
+def dense(X):
+    return X.toarray() if hasattr(X, "toarray") else np.asarray(X)
 
 def main():
     cfg.MODEL_DIR.mkdir(exist_ok=True)
@@ -21,36 +27,52 @@ def main():
     feat, num = get_feature_lists(train_df)
 
     pre = build_preprocessor(num)
-    X_full = pre.fit_transform(train_df[feat]); y_full = train_df["y"].values
-    X_test = pre.transform(test_df[feat]); y_test = test_df["y"].values
+    X_full = dense(pre.fit_transform(train_df[feat])); y_full = train_df["y"].values
+    X_test = dense(pre.transform(test_df[feat])); y_test = test_df["y"].values
+    print("Features after encoding:", X_full.shape[1])
 
     X_tr, X_val, y_tr, y_val = train_test_split(
         X_full, y_full, test_size=0.3, stratify=y_full, random_state=42)
-    idx = np.random.RandomState(1).choice(X_tr.shape[0], cfg.FITNESS_SUBSET, replace=False)
-    X_sub, y_sub = X_tr[idx], y_tr[idx]
+    rng = np.random.RandomState(1)
+    i_tr = rng.choice(len(X_tr), cfg.SVM_FIT_TRAIN, replace=False)
+    i_val = rng.choice(len(X_val), cfg.SVM_FIT_VAL, replace=False)
+    X_sub, y_sub = X_tr[i_tr], y_tr[i_tr]
+    X_vs, y_vs = X_val[i_val], y_val[i_val]
 
     def fitness(p):
-        model = MLPClassifier(hidden_layer_sizes=(int(p[0]),), learning_rate_init=10 ** p[1],
-                              alpha=10 ** p[2], max_iter=cfg.FITNESS_MAX_ITER, random_state=0)
-        model.fit(X_sub, y_sub)
-        return accuracy_score(y_val, model.predict(X_val))
+        svc = SVC(kernel="rbf", C=10 ** p[0], gamma=10 ** p[1], cache_size=1000)
+        svc.fit(X_sub, y_sub)
+        return accuracy_score(y_vs, svc.predict(X_vs))
 
-    pso = PSO(fitness, cfg.LOWER_BOUNDS, cfg.UPPER_BOUNDS, cfg.PSO_PARTICLES,
-            cfg.PSO_ITERATIONS, cfg.PSO_W, cfg.PSO_C1, cfg.PSO_C2)
+    start = time.time()
+    pso = PSO(fitness, cfg.SVM_LOWER, cfg.SVM_UPPER, cfg.PSO_PARTICLES,
+                cfg.PSO_ITERATIONS, cfg.PSO_W, cfg.PSO_C1, cfg.PSO_C2)
     best, best_fit, history = pso.run()
-    neurons, lr, alpha = int(best[0]), float(10 ** best[1]), float(10 ** best[2])
-    print(f"Best parameters -> neurons={neurons}, lr={lr:.5f}, alpha={alpha:.6f}")
+    C, gamma = float(10 ** best[0]), float(10 ** best[1])
+    print(f"Best parameters -> C={C:.4f}, gamma={gamma:.6f} (PSO took {time.time() - start:.0f}s)")
 
-    final = MLPClassifier(hidden_layer_sizes=(neurons,), learning_rate_init=lr, alpha=alpha,
-                        max_iter=cfg.FINAL_MAX_ITER, random_state=0).fit(X_full, y_full)
-    baseline = MLPClassifier(max_iter=cfg.FINAL_MAX_ITER, random_state=0).fit(X_full, y_full)
+    n_final = min(cfg.SVM_FINAL_SAMPLES, len(X_full))
+    sel = np.random.RandomState(2).choice(len(X_full), n_final, replace=False)
+    X_fin, y_fin = X_full[sel], y_full[sel]
 
-    pred = final.predict(X_test)
-    acc_base = accuracy_score(y_test, baseline.predict(X_test))
-    acc_pso = accuracy_score(y_test, pred)
-    cm = confusion_matrix(y_test, pred).tolist()
-    print(f"Baseline test accuracy: {acc_base:.4f} | PSO-NN test accuracy: {acc_pso:.4f}")
+    print(f"Training final SVM on {n_final} rows...")
+    final_svc = SVC(kernel="rbf", C=C, gamma=gamma, cache_size=1000).fit(X_fin, y_fin)
+    print("Training default SVM, Random Forest, Logistic Regression...")
+    default_svc = SVC(kernel="rbf", cache_size=1000).fit(X_fin, y_fin)
+    rf = RandomForestClassifier(n_estimators=100, n_jobs=-1, random_state=0).fit(X_full, y_full)
+    lr = LogisticRegression(max_iter=500).fit(X_full, y_full)
+
+    pred = final_svc.predict(X_test)
+    results = {
+        "Default SVM": accuracy_score(y_test, default_svc.predict(X_test)),
+        "Logistic Regression": accuracy_score(y_test, lr.predict(X_test)),
+        "Random Forest": accuracy_score(y_test, rf.predict(X_test)),
+        "PSO-optimized SVM": accuracy_score(y_test, pred),
+    }
+    for name, acc in results.items():
+        print(f"{name:22s} test accuracy: {acc:.4f}")
     print(classification_report(y_test, pred, target_names=["Normal", "Attack"]))
+    cm = confusion_matrix(y_test, pred).tolist()
     print("Confusion matrix:", cm)
 
     plt.figure(figsize=(5, 3.5))
@@ -62,7 +84,7 @@ def main():
     defaults = {c: train_df[c].mode()[0] for c in cfg.CATEGORICAL}
     defaults.update({c: float(train_df[c].median()) for c in num})
     artifacts = {
-        "pre": pre, "clf": final, "feat": feat, "defaults": defaults,
+        "pre": pre, "clf": SVMClassifier(final_svc), "feat": feat, "defaults": defaults,
         "choices": {c: sorted(train_df[c].unique().tolist()) for c in cfg.CATEGORICAL},
         "samples": {
             "normal": test_df[test_df.y == 0].sample(30, random_state=1)[feat].to_dict("records"),
@@ -70,8 +92,12 @@ def main():
         }}
     joblib.dump(artifacts, cfg.MODEL_PATH)
     with open(cfg.METRICS_PATH, "w") as f:
-        json.dump({"neurons": neurons, "lr": lr, "alpha": alpha, "acc_base": acc_base,
-                "acc_pso": acc_pso, "cm": cm, "best_val": best_fit}, f)
+        json.dump({"C": C, "gamma": gamma,
+                    "acc_base": float(results["Default SVM"]),
+                    "acc_lr": float(results["Logistic Regression"]),
+                    "acc_rf": float(results["Random Forest"]),
+                    "acc_pso": float(results["PSO-optimized SVM"]),
+                    "cm": cm, "best_val": best_fit}, f)
     print("Saved model and metrics.")
 
 if __name__ == "__main__":

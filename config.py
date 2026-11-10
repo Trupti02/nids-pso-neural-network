@@ -28,13 +28,13 @@ CATEGORICAL = ["protocol_type", "service", "flag"]
 PSO_PARTICLES = 8
 PSO_ITERATIONS = 10
 PSO_W, PSO_C1, PSO_C2 = 0.7, 1.5, 1.5
-FITNESS_SUBSET = 15000
-FITNESS_MAX_ITER = 30
-FINAL_MAX_ITER = 100
 
-# Search space: [hidden neurons, log10(learning rate), log10(alpha)]
-LOWER_BOUNDS = [8, -4, -6]
-UPPER_BOUNDS = [128, -1, -2]
+# SVM search space: [log10(C), log10(gamma)]
+SVM_LOWER = [-1, -4]
+SVM_UPPER = [3, 0]
+SVM_FIT_TRAIN = 5000        # rows used to train each particle's SVM
+SVM_FIT_VAL = 10000         # rows used to score each particle
+SVM_FINAL_SAMPLES = 40000   # rows used for the final SVM (full data is very slow)
 
 # Fields shown on the webpage
 FORM_NUMERIC_FIELDS = ["duration","src_bytes","dst_bytes","count","srv_count","serror_rate",

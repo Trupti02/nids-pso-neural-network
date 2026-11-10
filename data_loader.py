@@ -23,4 +23,4 @@ def get_feature_lists(df):
 def build_preprocessor(num_cols):
     return ColumnTransformer([
         ("cat", OneHotEncoder(handle_unknown="ignore"), CATEGORICAL),
-        ("num", StandardScaler(), num_cols)])
+        ("num", StandardScaler(), num_cols)], sparse_threshold=0)
